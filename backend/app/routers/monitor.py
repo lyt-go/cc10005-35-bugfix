@@ -1,4 +1,8 @@
-"""采集监控接口：维护监控面板，覆盖提交面板评审、启用面板、归档面板等动作。"""
+"""采集监控接口：维护监控面板，覆盖提交面板评审、启用面板、归档面板等动作。
+
+归档面板会在同一事务内停止采样/新告警并级联更新引用它的限速规则，
+动作结果通过 ``related`` 字段把被联动的规则一并返回，前端一次刷新即可对齐两处数据。
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -6,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas import ActionResult, EntryPayload, PageResult
+from app.services.binding import BindingError
 from app.services.monitor import MonitorService
 
 router = APIRouter(prefix="/api/monitor", tags=["采集监控"])
@@ -26,6 +31,8 @@ def list_entries(
     """按面板编号与状态过滤采集监控列表；没有数据时返回空页，不报错。"""
     if size > 200:
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
+    if page < 1:
+        raise HTTPException(status_code=400, detail="页码必须从 1 开始")
     items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
 
@@ -42,7 +49,10 @@ def get_entry(entry_id: int) -> dict:
 @router.post("", response_model=ActionResult)
 def create_entry(payload: EntryPayload) -> ActionResult:
     """登记一条监控面板，缺字段时说明原因而不是静默丢弃。"""
-    entry, missing = service.create_entry(payload.values)
+    try:
+        entry, missing = service.create_entry(payload.values)
+    except BindingError as exc:
+        return ActionResult(ok=False, message=str(exc))
     if missing:
         return ActionResult(ok=False, message=f"缺少必填字段：{'、'.join(missing)}")
     return ActionResult(ok=True, message="监控面板已登记", entry=entry)
@@ -52,10 +62,13 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     """对单条监控面板执行提交面板评审、启用面板、归档面板；不允许的动作会被拦下并说明原因。"""
     action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
+    try:
+        entry, message, related = service.run_action(entry_id, action)
+    except BindingError as exc:
+        return ActionResult(ok=False, message=str(exc))
     if entry is None:
         return ActionResult(ok=False, message=message)
-    return ActionResult(ok=True, message=message, entry=entry)
+    return ActionResult(ok=True, message=message, entry=entry, related=related)
 
 
 @router.get("/export")

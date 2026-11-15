@@ -19,6 +19,8 @@ class ActionResult(BaseModel):
     ok: bool
     message: str
     entry: dict[str, Any] | None = None
+    # 同一提交内被联动更新的关联记录（如归档面板时级联的限速规则）
+    related: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class EntryPayload(BaseModel):
